@@ -1,0 +1,28 @@
+authInternalUsers:
+  - user: any
+    pass:
+    permissions:
+      - action: api
+      - action: publish
+      - action: read
+      - action: playback
+
+rtsp: yes
+rtspAddress: :8654
+
+hls: yes
+hlsAddress: :8898
+
+webrtc: yes
+webrtcAddress: :8899
+webrtcAdditionalHosts: [127.0.0.1]
+webrtcLocalUDPAddress: :8190
+
+api: yes
+apiAddress: :9998
+
+paths:
+  all_others:
+    rtspTransport: tcp
+    sourceOnDemandStartTimeout: 10s
+    sourceOnDemandCloseAfter: 10s
