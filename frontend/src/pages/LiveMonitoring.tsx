@@ -5,7 +5,7 @@ export function LiveMonitoring({ cameras }: { cameras: Camera[] }) {
   const active = cameras.filter((camera) => camera.stream_path).slice(0, 4);
   return (
     <div className="page" style={{ overflow: "hidden" }}>
-      <section className="stream-grid">
+      <section className={`stream-grid stream-grid-${Math.max(active.length, 1)}`}>
         {active.map((camera) => (
           <div className="stream-tile" key={camera.id}>
             <iframe title={camera.name} src={`${WEBRTC_BASE}/${camera.stream_path}`} allow="autoplay; fullscreen" />
