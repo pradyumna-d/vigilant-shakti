@@ -1,0 +1,93 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: shakti-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-vigilant_shakti}
+      MYSQL_USER: ${MYSQL_USER:-shakti}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-shakti_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+    ports:
+      - "3307:3306"
+    volumes:
+      - shakti-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  shakti-webrtc:
+    image: bluenviron/mediamtx:latest
+    container_name: shakti-webrtc
+    restart: unless-stopped
+    ports:
+      - "8654:8654"
+      - "8898:8898"
+      - "8899:8899"
+      - "8190:8190/udp"
+      - "9998:9998"
+    volumes:
+      - ./shakti-webrtc/mediamtx.yml:/mediamtx.yml:ro
+    command: /mediamtx.yml
+
+  backend:
+    build:
+      context: ./backend
+    container_name: shakti-backend
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: 3307
+      AI_INFERENCE_URL: http://127.0.0.1:8100
+      MEDIAMTX_API_URL: http://127.0.0.1:9998
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ai-inference:
+        condition: service_started
+
+  ai-inference:
+    build:
+      context: ./ai-inference
+    container_name: shakti-ai-inference
+    restart: unless-stopped
+    gpus: all
+    env_file:
+      - .env
+    environment:
+      BACKEND_URL: http://host.docker.internal:8000
+      MEDIAMTX_RTSP_URL: rtsp://shakti-webrtc:8654
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8100:8100"
+    volumes:
+      - shakti-yolo-models:/app/models
+    depends_on:
+      shakti-webrtc:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: shakti-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_WS_BASE_URL: ws://localhost:8000
+      VITE_WEBRTC_BASE_URL: http://localhost:8899
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  shakti-mysql-data:
+  shakti-yolo-models:
