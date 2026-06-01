@@ -38,6 +38,7 @@ temp/
 models/
 snapshots/
 recordings/
+graphify-out/
 
 # OS and editor noise
 .DS_Store

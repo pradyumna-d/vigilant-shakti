@@ -12,6 +12,7 @@ from app.services.camera_service import (
     camera_detection_classes,
     configure_camera_credentials,
     ensure_stream_record,
+    reconcile_authenticated_streams,
     set_detection_classes,
     start_inference_stream,
     upsert_discovered_camera,
@@ -30,6 +31,7 @@ def _camera_read(camera: Camera) -> CameraRead:
 
 @router.get("", response_model=list[CameraRead])
 async def list_cameras(session: AsyncSession = Depends(get_session)) -> list[CameraRead]:
+    await reconcile_authenticated_streams(session)
     result = await session.execute(select(Camera).order_by(Camera.id.desc()))
     return [_camera_read(camera) for camera in result.scalars().all()]
 

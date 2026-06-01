@@ -19,6 +19,10 @@ def _stream_path(camera_id: int) -> str:
     return f"camera-{camera_id}-processed"
 
 
+def _raw_stream_path(camera_id: int) -> str:
+    return f"camera-{camera_id}-raw"
+
+
 def camera_detection_classes(camera: Camera) -> list[str]:
     classes = (camera.metadata_json or {}).get("detection_classes")
     if isinstance(classes, list):
@@ -26,6 +30,31 @@ def camera_detection_classes(camera: Camera) -> list[str]:
         if valid:
             return valid
     return DEFAULT_DETECTION_CLASSES.copy()
+
+
+async def configure_mediamtx_camera_source(camera: Camera) -> str:
+    settings = get_settings()
+    if not camera.rtsp_url:
+        raise ValueError("camera has no RTSP URL")
+
+    path = _raw_stream_path(camera.id)
+    api_url = settings.mediamtx_api_url.rstrip("/")
+    payload = {
+        "source": camera.rtsp_url,
+        "sourceOnDemand": True,
+        "sourceOnDemandStartTimeout": "15s",
+        "sourceOnDemandCloseAfter": "30s",
+        "rtspTransport": "tcp",
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(f"{api_url}/v3/config/paths/add/{quote(path, safe='')}", json=payload)
+        if response.status_code in (400, 409):
+            delete_response = await client.delete(f"{api_url}/v3/config/paths/delete/{quote(path, safe='')}")
+            if delete_response.status_code not in (200, 404):
+                delete_response.raise_for_status()
+            response = await client.post(f"{api_url}/v3/config/paths/add/{quote(path, safe='')}", json=payload)
+        response.raise_for_status()
+    return f"{settings.mediamtx_rtsp_url}/{quote(path)}"
 
 
 async def upsert_discovered_camera(session: AsyncSession, payload: CameraCreate) -> tuple[Camera, bool]:
@@ -80,19 +109,20 @@ async def ensure_stream_record(session: AsyncSession, camera: Camera) -> CameraS
     settings = get_settings()
     path = camera.stream_path or _stream_path(camera.id)
     camera.stream_path = path
+    input_rtsp_url = f"{settings.mediamtx_rtsp_url}/{quote(_raw_stream_path(camera.id))}" if camera.rtsp_url else ""
     processed_rtsp_url = f"{settings.mediamtx_rtsp_url}/{path}"
     webrtc_url = f"{settings.mediamtx_webrtc_base_url}/{path}"
     existing = (
         await session.execute(select(CameraStream).where(CameraStream.camera_id == camera.id))
     ).scalar_one_or_none()
     if existing:
-        existing.input_rtsp_url = camera.rtsp_url or existing.input_rtsp_url
+        existing.input_rtsp_url = input_rtsp_url or existing.input_rtsp_url
         existing.processed_rtsp_url = processed_rtsp_url
         existing.webrtc_url = webrtc_url
         return existing
     stream = CameraStream(
         camera_id=camera.id,
-        input_rtsp_url=camera.rtsp_url or "",
+        input_rtsp_url=input_rtsp_url,
         processed_rtsp_url=processed_rtsp_url,
         webrtc_url=webrtc_url,
         status="starting",
@@ -108,13 +138,14 @@ async def start_inference_stream(camera: Camera) -> dict:
 
     inference_base_url = str(settings.ai_inference_url).rstrip("/")
     stream_path = camera.stream_path or _stream_path(camera.id)
+    inference_input_rtsp_url = await configure_mediamtx_camera_source(camera)
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(
             f"{inference_base_url}/streams/start",
             headers={"X-Shakti-Token": settings.ai_inference_api_token},
             json={
                 "camera_id": camera.id,
-                "rtsp_url": camera.rtsp_url,
+                "rtsp_url": inference_input_rtsp_url,
                 "stream_path": stream_path,
                 "processed_rtsp_url": f"{settings.mediamtx_rtsp_url}/{quote(stream_path)}",
                 "detection_classes": camera_detection_classes(camera),
@@ -122,6 +153,56 @@ async def start_inference_stream(camera: Camera) -> dict:
         )
         response.raise_for_status()
         return response.json()
+
+
+async def active_inference_camera_ids() -> set[int]:
+    settings = get_settings()
+    inference_base_url = str(settings.ai_inference_url).rstrip("/")
+    async with httpx.AsyncClient(timeout=5) as client:
+        response = await client.get(f"{inference_base_url}/streams")
+        response.raise_for_status()
+    active_ids: set[int] = set()
+    for item in response.json():
+        camera_id = item.get("camera_id")
+        if isinstance(camera_id, int) and item.get("status") != "stopped":
+            active_ids.add(camera_id)
+    return active_ids
+
+
+async def reconcile_authenticated_streams(session: AsyncSession) -> None:
+    try:
+        active_ids = await active_inference_camera_ids()
+    except Exception:
+        logger.exception("inference_stream_reconcile_failed")
+        return
+
+    result = await session.execute(
+        select(Camera).where(
+            Camera.credentials_configured.is_(True),
+            Camera.rtsp_url.is_not(None),
+        )
+    )
+    cameras = result.scalars().all()
+    for camera in cameras:
+        stream = await ensure_stream_record(session, camera)
+        if camera.id in active_ids:
+            stream.status = "running"
+            camera.state = CameraState.online
+            continue
+        try:
+            response = await start_inference_stream(camera)
+            stream.status = response.get("status", "starting")
+            stream.processed_rtsp_url = response.get("processed_rtsp_url", stream.processed_rtsp_url)
+            stream.webrtc_url = response.get("webrtc_url", stream.webrtc_url)
+            stream.metadata_json = None
+            camera.state = CameraState.online
+            logger.info("inference_stream_reconciled camera_id=%s", camera.id)
+        except Exception as exc:
+            logger.exception("inference_stream_reconcile_start_failed camera_id=%s", camera.id)
+            stream.status = "error"
+            stream.metadata_json = {"error": str(exc)}
+            camera.state = CameraState.error
+    await session.commit()
 
 
 def set_detection_classes(camera: Camera, detection_classes: list[str]) -> None:

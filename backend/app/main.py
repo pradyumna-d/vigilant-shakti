@@ -7,6 +7,8 @@ from app.api import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.init_db import init_db
+from app.db.session import AsyncSessionLocal
+from app.services.camera_service import reconcile_authenticated_streams
 from app.websocket.manager import ws_manager
 
 configure_logging()
@@ -16,6 +18,8 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    async with AsyncSessionLocal() as session:
+        await reconcile_authenticated_streams(session)
     yield
 
 
