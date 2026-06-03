@@ -66,27 +66,27 @@ class LatestFrameReader:
         self._thread = threading.Thread(target=self._run, name="latest-frame-reader", daemon=True)
         self._thread.start()
 
-    # def _probe_source(self) -> tuple[int, int, float]:
-    #     result = subprocess.run(
-    #         [
-    #             "ffprobe",
-    #             "-v",
-    #             "error",
-    #             "-rtsp_transport",
-    #             self.rtsp_transport,
-    #             "-select_streams",
-    #             "v:0",
-    #             "-show_entries",
-    #             "stream=width,height,avg_frame_rate,r_frame_rate",
-    #             "-of",
-    #             "json",
-    #             self.rtsp_url,
-    #         ],
-    #         check=True,
-    #         capture_output=True,
-    #         text=True,
-    #         timeout=10,
-    #     )
+    def _probe_source(self) -> tuple[int, int, float]:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-rtsp_transport",
+                self.rtsp_transport,
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,avg_frame_rate,r_frame_rate",
+                "-of",
+                "json",
+                self.rtsp_url,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         streams = json.loads(result.stdout).get("streams") or []
         if not streams:
             raise RuntimeError("ffprobe found no video stream")
